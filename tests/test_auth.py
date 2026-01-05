@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def _wipe_users() -> None:
     with engine.begin() as conn:
-        conn.execute(text("DELETE FROM users"))
+        conn.execute(text("TRUNCATE TABLE access_requests, users RESTART IDENTITY CASCADE"))
 
 
 def test_register_and_login() -> None:
