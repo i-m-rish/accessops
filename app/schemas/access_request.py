@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import Optional
-
+from pydantic import ConfigDict
 from pydantic import BaseModel, EmailStr, Field
 
 from app.models.access_request import RequestStatus
@@ -25,7 +25,6 @@ class AccessRequestOut(BaseModel):
     decided_by: Optional[uuid.UUID]
     decided_at: Optional[datetime]
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-        
+    
+    model_config = ConfigDict(from_attributes=True)
+    
