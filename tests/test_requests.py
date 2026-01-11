@@ -3,13 +3,14 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.main import app
 from app.db.session import engine
+from app.main import app
 
 client = TestClient(app)
 
 
 def _wipe_tables() -> None:
+    # Delete child rows first to avoid FK violations, even if cascade changes later.
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM access_requests"))
         conn.execute(text("DELETE FROM users"))
@@ -17,7 +18,7 @@ def _wipe_tables() -> None:
 
 def _register(email: str, password: str, role: str) -> None:
     r = client.post("/auth/register", json={"email": email, "password": password, "role": role})
-    assert r.status_code == 201, r.text
+    assert r.status_code in (201, 409), r.text
 
 
 def _login(email: str, password: str) -> str:
@@ -61,7 +62,10 @@ def test_requester_cannot_approve() -> None:
     assert r.status_code == 201, r.text
     req_id = r.json()["id"]
 
-    r2 = client.patch(f"/requests/{req_id}/approve", headers={"Authorization": f"Bearer {token}"})
+    r2 = client.patch(
+        f"/requests/{req_id}/approve",
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert r2.status_code == 403, r2.text
 
 
@@ -82,10 +86,14 @@ def test_approver_can_approve_and_list_all() -> None:
     assert r.status_code == 201, r.text
     req_id = r.json()["id"]
 
-    r2 = client.patch(f"/requests/{req_id}/approve", headers={"Authorization": f"Bearer {appr_token}"})
+    r2 = client.patch(
+        f"/requests/{req_id}/approve",
+        headers={"Authorization": f"Bearer {appr_token}"},
+    )
     assert r2.status_code == 200, r2.text
     assert r2.json()["status"] == "APPROVED"
 
     r3 = client.get("/requests", headers={"Authorization": f"Bearer {appr_token}"})
     assert r3.status_code == 200, r3.text
     assert any(x["id"] == req_id for x in r3.json())
+

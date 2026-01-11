@@ -4,12 +4,18 @@ from sqlalchemy import text
 from app.main import app
 from app.db.session import engine
 
+
 client = TestClient(app)
 
 
+
+
 def _wipe_users() -> None:
+    # Always delete children first to avoid FK issues in any schema changes.
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE TABLE access_requests, users RESTART IDENTITY CASCADE"))
+        conn.execute(text("DELETE FROM access_requests"))
+        conn.execute(text("DELETE FROM users"))
+
 
 
 def test_register_and_login() -> None:

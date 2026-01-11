@@ -43,12 +43,24 @@ def list_requests(
 
     q = db.query(AccessRequest)
 
-    # Requesters can only see their own requests
     if role == "REQUESTER":
         q = q.filter(AccessRequest.requester_id == user_id)
 
-    # Approver/Admin can see all
     return q.order_by(AccessRequest.created_at.desc()).all()
+
+
+# 🔒 REQUIRED FOR WORKFLOW TESTS
+@router.get("/pending", response_model=list[AccessRequestOut])
+def list_pending_requests(
+    db: Session = Depends(get_db),
+    claims: dict = Depends(require_role("APPROVER", "ADMIN")),
+) -> list[AccessRequest]:
+    return (
+        db.query(AccessRequest)
+        .filter(AccessRequest.status == RequestStatus.PENDING)
+        .order_by(AccessRequest.created_at.desc())
+        .all()
+    )
 
 
 def _get_pending_request(db: Session, request_id: uuid.UUID) -> AccessRequest:
