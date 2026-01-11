@@ -22,13 +22,7 @@ def jwt_expires_minutes() -> int:
 
 def jwt_secret() -> str:
     s = os.getenv("JWT_SECRET", "").strip()
-    if s:
-        return s
-
-    # Pytest sets PYTEST_CURRENT_TEST in the environment during test runs
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        return "dev-secret-for-tests"
-
-    raise RuntimeError("JWT_SECRET is required")
-
+    if not s:
+        raise RuntimeError("JWT_SECRET is required (set env var JWT_SECRET)")
+    return s
 
