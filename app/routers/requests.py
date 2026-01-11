@@ -10,6 +10,7 @@ from app.core.rbac import get_current_claims, require_role
 from app.db.deps import get_db
 from app.models.access_request import AccessRequest, RequestStatus
 from app.schemas.access_request import AccessRequestCreate, AccessRequestOut
+from app.services import audit_service
 
 router = APIRouter(prefix="/requests", tags=["requests"])
 
@@ -49,7 +50,6 @@ def list_requests(
     return q.order_by(AccessRequest.created_at.desc()).all()
 
 
-# 🔒 REQUIRED FOR WORKFLOW TESTS
 @router.get("/pending", response_model=list[AccessRequestOut])
 def list_pending_requests(
     db: Session = Depends(get_db),
@@ -79,9 +79,26 @@ def approve_request(
     claims: dict = Depends(require_role("APPROVER", "ADMIN")),
 ) -> AccessRequest:
     req = _get_pending_request(db, request_id)
+
     req.status = RequestStatus.APPROVED
     req.decided_by = uuid.UUID(str(claims["sub"]))
     req.decided_at = datetime.now(timezone.utc)
+
+    audit_service.emit(
+        db,
+        actor_id=req.decided_by,
+        action="access_request.approved",
+        entity_type="access_request",
+        entity_id=req.id,
+        details={
+            "requester_id": str(req.requester_id),
+            "resource": req.resource,
+            "action": req.action,
+            "previous_status": "PENDING",
+            "new_status": "APPROVED",
+        },
+    )
+
     db.commit()
     db.refresh(req)
     return req
@@ -94,9 +111,26 @@ def reject_request(
     claims: dict = Depends(require_role("APPROVER", "ADMIN")),
 ) -> AccessRequest:
     req = _get_pending_request(db, request_id)
+
     req.status = RequestStatus.REJECTED
     req.decided_by = uuid.UUID(str(claims["sub"]))
     req.decided_at = datetime.now(timezone.utc)
+
+    audit_service.emit(
+        db,
+        actor_id=req.decided_by,
+        action="access_request.rejected",
+        entity_type="access_request",
+        entity_id=req.id,
+        details={
+            "requester_id": str(req.requester_id),
+            "resource": req.resource,
+            "action": req.action,
+            "previous_status": "PENDING",
+            "new_status": "REJECTED",
+        },
+    )
+
     db.commit()
     db.refresh(req)
     return req
