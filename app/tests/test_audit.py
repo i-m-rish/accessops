@@ -1,4 +1,10 @@
+import uuid
+
 from sqlalchemy import text
+
+
+def _u(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:10]}@example.com"
 
 
 def _register(client, email: str, password: str, role: str):
@@ -30,11 +36,14 @@ def _create_request(client, requester_token: str) -> str:
 
 
 def test_approve_emits_audit_event(client, db_session):
-    _register(client, "req_audit_1@example.com", "Passw0rd!", "REQUESTER")
-    _register(client, "appr_audit_1@example.com", "Passw0rd!", "APPROVER")
+    req_email = _u("req_audit")
+    appr_email = _u("appr_audit")
 
-    requester_token = _login(client, "req_audit_1@example.com", "Passw0rd!")
-    approver_token = _login(client, "appr_audit_1@example.com", "Passw0rd!")
+    _register(client, req_email, "Passw0rd!", "REQUESTER")
+    _register(client, appr_email, "Passw0rd!", "APPROVER")
+
+    requester_token = _login(client, req_email, "Passw0rd!")
+    approver_token = _login(client, appr_email, "Passw0rd!")
 
     request_id = _create_request(client, requester_token)
 
@@ -52,11 +61,14 @@ def test_approve_emits_audit_event(client, db_session):
 
 
 def test_reject_emits_audit_event(client, db_session):
-    _register(client, "req_audit_2@example.com", "Passw0rd!", "REQUESTER")
-    _register(client, "appr_audit_2@example.com", "Passw0rd!", "APPROVER")
+    req_email = _u("req_audit")
+    appr_email = _u("appr_audit")
 
-    requester_token = _login(client, "req_audit_2@example.com", "Passw0rd!")
-    approver_token = _login(client, "appr_audit_2@example.com", "Passw0rd!")
+    _register(client, req_email, "Passw0rd!", "REQUESTER")
+    _register(client, appr_email, "Passw0rd!", "APPROVER")
+
+    requester_token = _login(client, req_email, "Passw0rd!")
+    approver_token = _login(client, appr_email, "Passw0rd!")
 
     request_id = _create_request(client, requester_token)
 
