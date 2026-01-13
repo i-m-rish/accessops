@@ -1,39 +1,38 @@
 from __future__ import annotations
 
-from enum import StrEnum
-from typing import Final
+from dataclasses import dataclass
 
 
-class Role(StrEnum):
-    REQUESTER = "REQUESTER"
-    APPROVER = "APPROVER"
-    ADMIN = "ADMIN"
+@dataclass(frozen=True)
+class PolicyResult:
+    allowed: bool
+    status_code: int | None = None
+    detail: str | None = None
 
 
-# Use these action names consistently in routers/tests.
-ACTIONS: Final[set[str]] = {
-    "request:create",
-    "request:read:self",
-    "request:cancel:self",
-    "request:read:any",
-    "request:approve",
-    "request:reject",
-    "request:override",
-}
+def can_access_pending_queue(role: str | None) -> PolicyResult:
+    r = (role or "").strip().upper()
+    if r in {"APPROVER", "ADMIN"}:
+        return PolicyResult(True)
+    return PolicyResult(False, 403, "Forbidden")
 
 
-ROLE_ACTIONS: Final[dict[Role, set[str]]] = {
-    Role.REQUESTER: {"request:create", "request:read:self", "request:cancel:self"},
-    Role.APPROVER: {"request:read:any", "request:approve", "request:reject"},
-    Role.ADMIN: {"request:read:any", "request:approve", "request:reject", "request:override"},
-}
+def can_decide_request(
+    *,
+    actor_role: str | None,
+    actor_id: str,
+    requester_id: str,
+    current_status: str,
+) -> PolicyResult:
+    role = (actor_role or "").strip().upper()
 
+    if role not in {"APPROVER", "ADMIN"}:
+        return PolicyResult(False, 403, "Forbidden")
 
-def has_action(role: str | None, action: str) -> bool:
-    if not role:
-        return False
-    try:
-        r = Role(role)
-    except ValueError:
-        return False
-    return action in ROLE_ACTIONS.get(r, set())
+    if (current_status or "").strip().upper() != "PENDING":
+        return PolicyResult(False, 400, "Request not pending")
+
+    if actor_id == requester_id:
+        return PolicyResult(False, 403, "Self-approval is not allowed")
+
+    return PolicyResult(True)

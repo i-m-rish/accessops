@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core import policy
 from app.core.rbac import get_current_claims, require_role
 from app.db.deps import get_db
 from app.models.access_request import AccessRequest, RequestStatus
@@ -39,11 +40,10 @@ def list_requests(
     db: Session = Depends(get_db),
     claims: dict = Depends(get_current_claims),
 ) -> list[AccessRequest]:
-    role = (claims.get("role") or "").strip()
+    role = (claims.get("role") or "").strip().upper()
     user_id = uuid.UUID(str(claims["sub"]))
 
     q = db.query(AccessRequest)
-
     if role == "REQUESTER":
         q = q.filter(AccessRequest.requester_id == user_id)
 
@@ -53,8 +53,12 @@ def list_requests(
 @router.get("/pending", response_model=list[AccessRequestOut])
 def list_pending_requests(
     db: Session = Depends(get_db),
-    claims: dict = Depends(require_role("APPROVER", "ADMIN")),
+    claims: dict = Depends(get_current_claims),
 ) -> list[AccessRequest]:
+    res = policy.can_access_pending_queue(claims.get("role"))
+    if not res.allowed:
+        raise HTTPException(status_code=res.status_code or 403, detail=res.detail or "Forbidden")
+
     return (
         db.query(AccessRequest)
         .filter(AccessRequest.status == RequestStatus.PENDING)
@@ -63,12 +67,10 @@ def list_pending_requests(
     )
 
 
-def _get_pending_request(db: Session, request_id: uuid.UUID) -> AccessRequest:
+def _get_request(db: Session, request_id: uuid.UUID) -> AccessRequest:
     req = db.get(AccessRequest, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
-    if req.status != RequestStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Request not pending")
     return req
 
 
@@ -76,12 +78,25 @@ def _get_pending_request(db: Session, request_id: uuid.UUID) -> AccessRequest:
 def approve_request(
     request_id: uuid.UUID,
     db: Session = Depends(get_db),
-    claims: dict = Depends(require_role("APPROVER", "ADMIN")),
+    claims: dict = Depends(get_current_claims),
 ) -> AccessRequest:
-    req = _get_pending_request(db, request_id)
+    req = _get_request(db, request_id)
+
+    actor_id = str(claims["sub"])
+    requester_id = str(req.requester_id)
+    current_status = req.status.value if hasattr(req.status, "value") else str(req.status)
+
+    res = policy.can_decide_request(
+        actor_role=claims.get("role"),
+        actor_id=actor_id,
+        requester_id=requester_id,
+        current_status=current_status,
+    )
+    if not res.allowed:
+        raise HTTPException(status_code=res.status_code or 403, detail=res.detail or "Forbidden")
 
     req.status = RequestStatus.APPROVED
-    req.decided_by = uuid.UUID(str(claims["sub"]))
+    req.decided_by = uuid.UUID(actor_id)
     req.decided_at = datetime.now(timezone.utc)
 
     audit_service.emit(
@@ -108,12 +123,25 @@ def approve_request(
 def reject_request(
     request_id: uuid.UUID,
     db: Session = Depends(get_db),
-    claims: dict = Depends(require_role("APPROVER", "ADMIN")),
+    claims: dict = Depends(get_current_claims),
 ) -> AccessRequest:
-    req = _get_pending_request(db, request_id)
+    req = _get_request(db, request_id)
+
+    actor_id = str(claims["sub"])
+    requester_id = str(req.requester_id)
+    current_status = req.status.value if hasattr(req.status, "value") else str(req.status)
+
+    res = policy.can_decide_request(
+        actor_role=claims.get("role"),
+        actor_id=actor_id,
+        requester_id=requester_id,
+        current_status=current_status,
+    )
+    if not res.allowed:
+        raise HTTPException(status_code=res.status_code or 403, detail=res.detail or "Forbidden")
 
     req.status = RequestStatus.REJECTED
-    req.decided_by = uuid.UUID(str(claims["sub"]))
+    req.decided_by = uuid.UUID(actor_id)
     req.decided_at = datetime.now(timezone.utc)
 
     audit_service.emit(
