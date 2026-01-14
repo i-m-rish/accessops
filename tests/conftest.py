@@ -1,164 +1,97 @@
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
+import os
+import importlib
+import pkgutil
+from typing import Generator
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+import pytest
 
-from app.core import policy
-from app.core.rbac import get_current_claims, require_role
-from app.db.deps import get_db
-from app.models.access_request import AccessRequest, RequestStatus
-from app.schemas.access_request import AccessRequestCreate, AccessRequestOut
-from app.services import audit_service
+@pytest.fixture(autouse=True)
+def _env_defaults(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "dev-secret-for-tests")
+    monkeypatch.setenv("JWT_ALGORITHM", "HS256")
+    monkeypatch.setenv("JWT_EXPIRES_MINUTES", "60")
 
-router = APIRouter(prefix="/requests", tags=["requests"])
+# IMPORTANT:
+# Set env before importing app modules that may read env at import-time.
+def pytest_configure() -> None:
+    os.environ.setdefault("JWT_SECRET", "test-secret")
+    # If your branch enforces issuer/audience, set them here too.
+    os.environ.setdefault("JWT_ISSUER", "test-issuer")
+    os.environ.setdefault("JWT_AUDIENCE", "test-audience")
 
-
-@router.post("", response_model=AccessRequestOut, status_code=status.HTTP_201_CREATED)
-def create_request(
-    payload: AccessRequestCreate,
-    db: Session = Depends(get_db),
-    claims: dict = Depends(require_role("REQUESTER", "APPROVER", "ADMIN")),
-) -> AccessRequest:
-    req = AccessRequest(
-        requester_id=uuid.UUID(str(claims["sub"])),
-        resource=payload.resource,
-        action=payload.action,
-        justification=payload.justification,
-        status=RequestStatus.PENDING,
-    )
-    db.add(req)
-    db.commit()
-    db.refresh(req)
-    return req
+    # Use a deterministic sqlite DB for tests.
+    os.environ.setdefault("DATABASE_URL", "sqlite://")
 
 
-@router.get("", response_model=list[AccessRequestOut])
-def list_requests(
-    db: Session = Depends(get_db),
-    claims: dict = Depends(get_current_claims),
-) -> list[AccessRequest]:
-    role = (claims.get("role") or "").strip().upper()
-    user_id = uuid.UUID(str(claims["sub"]))
+def _import_all_models() -> None:
+    """
+    Ensure all SQLAlchemy models are imported so Base.metadata knows about them
+    before create_all() runs.
+    """
+    try:
+        import app.models  # type: ignore
+    except Exception:
+        return
 
-    q = db.query(AccessRequest)
-    if role == "REQUESTER":
-        q = q.filter(AccessRequest.requester_id == user_id)
-
-    return q.order_by(AccessRequest.created_at.desc()).all()
+    pkg = app.models  # type: ignore
+    for m in pkgutil.iter_modules(pkg.__path__, pkg.__name__ + "."):
+        importlib.import_module(m.name)
 
 
-@router.get("/pending", response_model=list[AccessRequestOut])
-def list_pending_requests(
-    db: Session = Depends(get_db),
-    claims: dict = Depends(get_current_claims),
-) -> list[AccessRequest]:
-    res = policy.can_access_pending_queue(claims.get("role"))
-    if not res.allowed:
-        raise HTTPException(status_code=res.status_code or 403, detail=res.detail or "Forbidden")
+# Base lives here in your repo (you already rg'd it).
+from app.db.base import Base  # noqa: E402
 
-    return (
-        db.query(AccessRequest)
-        .filter(AccessRequest.status == RequestStatus.PENDING)
-        .order_by(AccessRequest.created_at.desc())
-        .all()
+
+@pytest.fixture(scope="session")
+def engine():
+    """
+    In-memory SQLite with StaticPool so the DB persists across connections
+    during the test session.
+    """
+    _import_all_models()
+
+    eng = create_engine(
+        os.environ["DATABASE_URL"],
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
 
-
-def _get_request(db: Session, request_id: uuid.UUID) -> AccessRequest:
-    req = db.get(AccessRequest, request_id)
-    if not req:
-        raise HTTPException(status_code=404, detail="Request not found")
-    return req
-
-
-@router.patch("/{request_id}/approve", response_model=AccessRequestOut)
-def approve_request(
-    request_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    claims: dict = Depends(get_current_claims),
-) -> AccessRequest:
-    req = _get_request(db, request_id)
-
-    actor_id = str(claims["sub"])
-    requester_id = str(req.requester_id)
-    current_status = req.status.value if hasattr(req.status, "value") else str(req.status)
-
-    res = policy.can_decide_request(
-        actor_role=claims.get("role"),
-        actor_id=actor_id,
-        requester_id=requester_id,
-        current_status=current_status,
-    )
-    if not res.allowed:
-        raise HTTPException(status_code=res.status_code or 403, detail=res.detail or "Forbidden")
-
-    req.status = RequestStatus.APPROVED
-    req.decided_by = uuid.UUID(actor_id)
-    req.decided_at = datetime.now(timezone.utc)
-
-    audit_service.emit(
-        db,
-        actor_id=req.decided_by,
-        action="access_request.approved",
-        entity_type="access_request",
-        entity_id=req.id,
-        details={
-            "requester_id": str(req.requester_id),
-            "resource": req.resource,
-            "action": req.action,
-            "previous_status": "PENDING",
-            "new_status": "APPROVED",
-        },
-    )
-
-    db.commit()
-    db.refresh(req)
-    return req
+    Base.metadata.create_all(bind=eng)
+    try:
+        yield eng
+    finally:
+        Base.metadata.drop_all(bind=eng)
 
 
-@router.patch("/{request_id}/reject", response_model=AccessRequestOut)
-def reject_request(
-    request_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    claims: dict = Depends(get_current_claims),
-) -> AccessRequest:
-    req = _get_request(db, request_id)
+@pytest.fixture()
+def db_session(engine) -> Generator[Session, None, None]:
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.rollback()
+        db.close()
 
-    actor_id = str(claims["sub"])
-    requester_id = str(req.requester_id)
-    current_status = req.status.value if hasattr(req.status, "value") else str(req.status)
 
-    res = policy.can_decide_request(
-        actor_role=claims.get("role"),
-        actor_id=actor_id,
-        requester_id=requester_id,
-        current_status=current_status,
-    )
-    if not res.allowed:
-        raise HTTPException(status_code=res.status_code or 403, detail=res.detail or "Forbidden")
+@pytest.fixture()
+def client(db_session: Session) -> Generator[TestClient, None, None]:
+    from app.main import app  # import after env is set
+    from app.db.deps import get_db
 
-    req.status = RequestStatus.REJECTED
-    req.decided_by = uuid.UUID(actor_id)
-    req.decided_at = datetime.now(timezone.utc)
+    def override_get_db() -> Generator[Session, None, None]:
+        yield db_session
 
-    audit_service.emit(
-        db,
-        actor_id=req.decided_by,
-        action="access_request.rejected",
-        entity_type="access_request",
-        entity_id=req.id,
-        details={
-            "requester_id": str(req.requester_id),
-            "resource": req.resource,
-            "action": req.action,
-            "previous_status": "PENDING",
-            "new_status": "REJECTED",
-        },
-    )
+    app.dependency_overrides[get_db] = override_get_db
 
-    db.commit()
-    db.refresh(req)
-    return req
+    with TestClient(app) as c:
+        yield c
+
+    app.dependency_overrides.clear()
