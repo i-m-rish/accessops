@@ -29,7 +29,7 @@ def upgrade() -> None:
     sa.Column('status', sa.Enum('PENDING', 'APPROVED', 'REJECTED', name='request_status'), nullable=False),
     sa.Column('decided_by', sa.UUID(), nullable=True),
     sa.Column('decided_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.ForeignKeyConstraint(['decided_by'], ['users.id'], ),
     sa.ForeignKeyConstraint(['requester_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
