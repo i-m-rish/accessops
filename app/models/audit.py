@@ -5,6 +5,7 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 
 from app.db.base import Base
+from sqlalchemy.types import JSON
 
 
 class AuditEvent(Base):
@@ -17,5 +18,10 @@ class AuditEvent(Base):
     entity_type = Column(String, nullable=False)
     entity_id = Column(UUID(as_uuid=True), nullable=False)
 
-    details = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    details = Column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=False,
+        server_default=text("'{}'")
+    )
+
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
