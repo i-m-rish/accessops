@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 MODE="${1:-test}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 
 export DATABASE_URL="${DATABASE_URL:-postgresql+psycopg://accessops:accessops@localhost:5432/accessops}"
 export JWT_SECRET="${JWT_SECRET:-dev-secret-for-local-run}"
@@ -23,11 +24,38 @@ require_cmd() {
   fi
 }
 
-require_cmd python
+pick_python() {
+  if [[ -n "$PYTHON_BIN" ]]; then
+    echo "$PYTHON_BIN"
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+    return
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    echo "python"
+    return
+  fi
+
+  echo "Missing Python. On macOS, install with: brew install python" >&2
+  exit 1
+}
+
+PYTHON_CMD="$(pick_python)"
+
+if [[ "$OSTYPE" == darwin* ]]; then
+  echo "macOS detected. If PostgreSQL is not running, start it with one of:"
+  echo "  brew services start postgresql@16"
+  echo "  brew services start postgresql"
+  echo
+fi
 
 if [[ ! -d .venv ]]; then
-  echo "Creating Python virtual environment..."
-  python -m venv .venv
+  echo "Creating Python virtual environment with $PYTHON_CMD..."
+  "$PYTHON_CMD" -m venv .venv
 fi
 
 # shellcheck disable=SC1091
