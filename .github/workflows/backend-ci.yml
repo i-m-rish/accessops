@@ -1,0 +1,52 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: accessops
+          POSTGRES_PASSWORD: accessops
+          POSTGRES_DB: accessops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accessops -d accessops"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+psycopg://accessops:accessops@localhost:5432/accessops
+      JWT_SECRET: test-secret-for-ci
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRES_MINUTES: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run database migrations
+        run: alembic upgrade head
+
+      - name: Run backend tests
+        run: pytest -q
