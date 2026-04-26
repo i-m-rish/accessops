@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 
-const API = "http://127.0.0.1:8000";
+const API = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000";
 
 function Register() {
   const [email, setEmail] = useState("");
@@ -33,7 +33,6 @@ function Register() {
           email,
           password,
           display_name: displayName ? displayName : null,
-          role: "REQUESTER",
         }),
       });
 
@@ -50,7 +49,7 @@ function Register() {
       }
 
       setKind("success");
-      setMsg(`User created: ${data.email}. You can login now.`);
+      setMsg(`User created: ${data.email}. Assigned role: ${data.role}. You can login now.`);
       setPassword("");
     } catch {
       setKind("error");
@@ -70,17 +69,15 @@ function Register() {
   return (
     <main className="min-h-screen bg-zinc-50 dark:bg-black flex items-center justify-center px-6">
       <div className="w-full max-w-md rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 shadow-sm p-8">
-        {/* Header */}
         <div className="mb-7">
           <h2 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
             Register
           </h2>
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            Create a requester account for AccessOps.
+            Create a requester account for AccessOps. Role assignment is controlled server-side.
           </p>
         </div>
 
-        {/* Form */}
         <form onSubmit={submit} className="space-y-4">
           <div className="space-y-1.5">
             <label className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
@@ -136,14 +133,12 @@ function Register() {
           </button>
         </form>
 
-        {/* Message */}
         {msg ? (
           <div className={`mt-5 rounded-lg border px-3 py-2 text-sm ${badgeClass}`}>
             {msg}
           </div>
         ) : null}
 
-        {/* Footer actions */}
         <div className="mt-6 flex items-center justify-between text-sm">
           <Link
             href="/login"
@@ -159,8 +154,8 @@ function Register() {
           </Link>
         </div>
 
-        <div className="mt-6 text-xs text-zinc-400">
-          This registers a <span className="font-mono">REQUESTER</span> role account.
+        <div className="mt-6 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 p-3 text-xs text-zinc-500 dark:text-zinc-400">
+          Public registration always creates <span className="font-mono">REQUESTER</span>. Elevated roles must not be supplied from the browser.
         </div>
       </div>
     </main>
