@@ -9,3 +9,4 @@
 - RBAC is enforced server-side; UI is never an authority.
 - Alembic is the schema source of truth; no production create_all.
 - Tests must not rely on old DB state; failures like "no such table" are harness regressions first.
+- Approval status and provisioning status must remain separate lifecycle states.
