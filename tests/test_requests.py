@@ -16,9 +16,25 @@ def _wipe_tables() -> None:
         conn.execute(text("DELETE FROM users"))
 
 
-def _register(email: str, password: str, role: str) -> None:
-    r = client.post("/auth/register", json={"email": email, "password": password, "role": role})
-    assert r.status_code in (201, 409), r.text
+def _register(email: str, password: str, role: str | None = None) -> dict:
+    payload = {"email": email, "password": password}
+    if role is not None:
+        payload["role"] = role
+    r = client.post("/auth/register", json=payload)
+    assert r.status_code in (201, 400, 409, 422), r.text
+    return r.json()
+
+
+def _create_user_direct(email: str, password: str, role: str) -> None:
+    r = client.post("/auth/register", json={"email": email, "password": password})
+    assert r.status_code in (201, 400), r.text
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE users SET role = :role WHERE email = :email"), {"role": role, "email": email})
+
+
+def _user_id(email: str) -> str:
+    with engine.begin() as conn:
+        return str(conn.execute(text("SELECT id FROM users WHERE email = :email"), {"email": email}).scalar_one())
 
 
 def _login(email: str, password: str) -> str:
@@ -27,10 +43,67 @@ def _login(email: str, password: str) -> str:
     return r.json()["access_token"]
 
 
+def test_registration_rejects_client_supplied_role() -> None:
+    _wipe_tables()
+
+    r = client.post(
+        "/auth/register",
+        json={"email": "evil@example.com", "password": "StrongPass123", "role": "ADMIN"},
+    )
+
+    assert r.status_code == 422, r.text
+
+
+def test_registration_defaults_to_requester() -> None:
+    _wipe_tables()
+
+    r = client.post("/auth/register", json={"email": "req0@example.com", "password": "StrongPass123"})
+
+    assert r.status_code == 201, r.text
+    assert r.json()["role"] == "REQUESTER"
+
+
+def test_admin_can_update_user_role() -> None:
+    _wipe_tables()
+
+    _create_user_direct("admin@example.com", "StrongPass123", "ADMIN")
+    _register("target@example.com", "StrongPass123")
+
+    admin_token = _login("admin@example.com", "StrongPass123")
+    target_id = _user_id("target@example.com")
+
+    r = client.patch(
+        f"/admin/users/{target_id}/role",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"role": "APPROVER"},
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["role"] == "APPROVER"
+
+
+def test_non_admin_cannot_update_user_role() -> None:
+    _wipe_tables()
+
+    _register("requester@example.com", "StrongPass123")
+    _register("target2@example.com", "StrongPass123")
+
+    requester_token = _login("requester@example.com", "StrongPass123")
+    target_id = _user_id("target2@example.com")
+
+    r = client.patch(
+        f"/admin/users/{target_id}/role",
+        headers={"Authorization": f"Bearer {requester_token}"},
+        json={"role": "APPROVER"},
+    )
+
+    assert r.status_code == 403, r.text
+
+
 def test_requester_can_create_and_list_own_requests() -> None:
     _wipe_tables()
 
-    _register("req1@example.com", "StrongPass123", "REQUESTER")
+    _register("req1@example.com", "StrongPass123")
     token = _login("req1@example.com", "StrongPass123")
 
     r = client.post(
@@ -51,7 +124,7 @@ def test_requester_can_create_and_list_own_requests() -> None:
 def test_requester_cannot_approve() -> None:
     _wipe_tables()
 
-    _register("req2@example.com", "StrongPass123", "REQUESTER")
+    _register("req2@example.com", "StrongPass123")
     token = _login("req2@example.com", "StrongPass123")
 
     r = client.post(
@@ -72,8 +145,8 @@ def test_requester_cannot_approve() -> None:
 def test_approver_can_approve_and_list_all() -> None:
     _wipe_tables()
 
-    _register("req3@example.com", "StrongPass123", "REQUESTER")
-    _register("app1@example.com", "StrongPass123", "APPROVER")
+    _register("req3@example.com", "StrongPass123")
+    _create_user_direct("app1@example.com", "StrongPass123", "APPROVER")
 
     req_token = _login("req3@example.com", "StrongPass123")
     appr_token = _login("app1@example.com", "StrongPass123")
