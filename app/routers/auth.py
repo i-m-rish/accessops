@@ -20,7 +20,7 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)) -> RegisterOut:
         email=str(payload.email),
         password_hash=hash_password(payload.password),
         display_name=payload.display_name,
-        role=payload.role,
+        role="REQUESTER",
     )
     db.add(u)
     db.commit()
