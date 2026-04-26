@@ -9,7 +9,6 @@ client = TestClient(app)
 
 
 
-
 def _wipe_users() -> None:
     # Always delete children first to avoid FK issues in any schema changes.
     with engine.begin() as conn:
@@ -23,7 +22,7 @@ def test_register_and_login() -> None:
 
     r = client.post(
         "/auth/register",
-        json={"email": "a@example.com", "password": "StrongPass123", "role": "REQUESTER"},
+        json={"email": "a@example.com", "password": "StrongPass123"},
     )
     assert r.status_code == 201, r.text
     body = r.json()
@@ -36,6 +35,17 @@ def test_register_and_login() -> None:
     tok = l.json()
     assert "access_token" in tok
     assert tok["token_type"] == "bearer"
+
+
+def test_register_rejects_client_supplied_role() -> None:
+    _wipe_users()
+
+    r = client.post(
+        "/auth/register",
+        json={"email": "evil@example.com", "password": "StrongPass123", "role": "ADMIN"},
+    )
+
+    assert r.status_code == 422, r.text
 
 
 def test_register_duplicate_email_rejected() -> None:
