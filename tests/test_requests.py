@@ -29,6 +29,16 @@ def _create_user_direct(email: str, password: str, role: str) -> None:
         conn.execute(text("UPDATE users SET role = :role WHERE email = :email"), {"role": role, "email": email})
 
 
+def _user_id(email: str) -> str:
+    with engine.begin() as conn:
+        return str(conn.execute(text("SELECT id FROM users WHERE email = :email"), {"email": email}).scalar_one())
+
+
+def _user_role(email: str) -> str:
+    with engine.begin() as conn:
+        return str(conn.execute(text("SELECT role FROM users WHERE email = :email"), {"email": email}).scalar_one())
+
+
 def _login(email: str, password: str) -> str:
     r = client.post("/auth/login", json={"email": email, "password": password})
     assert r.status_code == 200, r.text
@@ -52,6 +62,45 @@ def test_registration_defaults_to_requester() -> None:
     data = _register("req0@example.com", "StrongPass123")
 
     assert data["role"] == "REQUESTER"
+
+
+def test_admin_can_update_user_role() -> None:
+    _wipe_tables()
+
+    _create_user_direct("admin@example.com", "StrongPass123", "ADMIN")
+    _register("target@example.com", "StrongPass123")
+
+    admin_token = _login("admin@example.com", "StrongPass123")
+    target_id = _user_id("target@example.com")
+
+    r = client.patch(
+        f"/user-admin/users/{target_id}/role",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"role": "APPROVER"},
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["role"] == "APPROVER"
+    assert _user_role("target@example.com") == "APPROVER"
+
+
+def test_non_admin_cannot_update_user_role() -> None:
+    _wipe_tables()
+
+    _register("requester@example.com", "StrongPass123")
+    _register("target2@example.com", "StrongPass123")
+
+    requester_token = _login("requester@example.com", "StrongPass123")
+    target_id = _user_id("target2@example.com")
+
+    r = client.patch(
+        f"/user-admin/users/{target_id}/role",
+        headers={"Authorization": f"Bearer {requester_token}"},
+        json={"role": "APPROVER"},
+    )
+
+    assert r.status_code == 403, r.text
+    assert _user_role("target2@example.com") == "REQUESTER"
 
 
 def test_requester_can_create_and_list_own_requests() -> None:
