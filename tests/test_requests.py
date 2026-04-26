@@ -16,9 +16,17 @@ def _wipe_tables() -> None:
         conn.execute(text("DELETE FROM users"))
 
 
-def _register(email: str, password: str, role: str) -> None:
-    r = client.post("/auth/register", json={"email": email, "password": password, "role": role})
-    assert r.status_code in (201, 409), r.text
+def _register(email: str, password: str) -> dict:
+    r = client.post("/auth/register", json={"email": email, "password": password})
+    assert r.status_code in (201, 400), r.text
+    return r.json()
+
+
+def _create_user_direct(email: str, password: str, role: str) -> None:
+    r = client.post("/auth/register", json={"email": email, "password": password})
+    assert r.status_code in (201, 400), r.text
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE users SET role = :role WHERE email = :email"), {"role": role, "email": email})
 
 
 def _login(email: str, password: str) -> str:
@@ -27,10 +35,29 @@ def _login(email: str, password: str) -> str:
     return r.json()["access_token"]
 
 
+def test_registration_rejects_client_supplied_role() -> None:
+    _wipe_tables()
+
+    r = client.post(
+        "/auth/register",
+        json={"email": "evil@example.com", "password": "StrongPass123", "role": "ADMIN"},
+    )
+
+    assert r.status_code == 422, r.text
+
+
+def test_registration_defaults_to_requester() -> None:
+    _wipe_tables()
+
+    data = _register("req0@example.com", "StrongPass123")
+
+    assert data["role"] == "REQUESTER"
+
+
 def test_requester_can_create_and_list_own_requests() -> None:
     _wipe_tables()
 
-    _register("req1@example.com", "StrongPass123", "REQUESTER")
+    _register("req1@example.com", "StrongPass123")
     token = _login("req1@example.com", "StrongPass123")
 
     r = client.post(
@@ -40,18 +67,23 @@ def test_requester_can_create_and_list_own_requests() -> None:
     )
     assert r.status_code == 201, r.text
 
+    body = r.json()
+    assert body["status"] == "PENDING"
+    assert body["provisioning_status"] == "NOT_STARTED"
+
     r2 = client.get("/requests", headers={"Authorization": f"Bearer {token}"})
     assert r2.status_code == 200, r2.text
     items = r2.json()
     assert len(items) == 1
     assert items[0]["resource"] == "jira"
     assert items[0]["status"] == "PENDING"
+    assert items[0]["provisioning_status"] == "NOT_STARTED"
 
 
 def test_requester_cannot_approve() -> None:
     _wipe_tables()
 
-    _register("req2@example.com", "StrongPass123", "REQUESTER")
+    _register("req2@example.com", "StrongPass123")
     token = _login("req2@example.com", "StrongPass123")
 
     r = client.post(
@@ -69,11 +101,11 @@ def test_requester_cannot_approve() -> None:
     assert r2.status_code == 403, r2.text
 
 
-def test_approver_can_approve_and_list_all() -> None:
+def test_approver_can_approve_and_queue_provisioning() -> None:
     _wipe_tables()
 
-    _register("req3@example.com", "StrongPass123", "REQUESTER")
-    _register("app1@example.com", "StrongPass123", "APPROVER")
+    _register("req3@example.com", "StrongPass123")
+    _create_user_direct("app1@example.com", "StrongPass123", "APPROVER")
 
     req_token = _login("req3@example.com", "StrongPass123")
     appr_token = _login("app1@example.com", "StrongPass123")
@@ -92,8 +124,37 @@ def test_approver_can_approve_and_list_all() -> None:
     )
     assert r2.status_code == 200, r2.text
     assert r2.json()["status"] == "APPROVED"
+    assert r2.json()["provisioning_status"] == "QUEUED"
 
     r3 = client.get("/requests", headers={"Authorization": f"Bearer {appr_token}"})
     assert r3.status_code == 200, r3.text
     assert any(x["id"] == req_id for x in r3.json())
 
+
+def test_admin_can_mark_approved_request_provisioned() -> None:
+    _wipe_tables()
+
+    _register("req4@example.com", "StrongPass123")
+    _create_user_direct("app2@example.com", "StrongPass123", "APPROVER")
+    _create_user_direct("admin1@example.com", "StrongPass123", "ADMIN")
+
+    req_token = _login("req4@example.com", "StrongPass123")
+    appr_token = _login("app2@example.com", "StrongPass123")
+    admin_token = _login("admin1@example.com", "StrongPass123")
+
+    r = client.post(
+        "/requests",
+        headers={"Authorization": f"Bearer {req_token}"},
+        json={"resource": "snow", "action": "CATALOG_ADMIN"},
+    )
+    assert r.status_code == 201, r.text
+    req_id = r.json()["id"]
+
+    approved = client.patch(f"/requests/{req_id}/approve", headers={"Authorization": f"Bearer {appr_token}"})
+    assert approved.status_code == 200, approved.text
+
+    provisioned = client.patch(f"/requests/{req_id}/provision", headers={"Authorization": f"Bearer {admin_token}"})
+    assert provisioned.status_code == 200, provisioned.text
+    assert provisioned.json()["status"] == "APPROVED"
+    assert provisioned.json()["provisioning_status"] == "PROVISIONED"
+    assert provisioned.json()["provisioned_at"] is not None
